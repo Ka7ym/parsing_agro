@@ -1,0 +1,60 @@
+// dataAccess/dbService.js
+const db = require('../models');
+const { Product, Category, Brand, ProductImage, ProductSpec } = db;
+
+async function connectDB() {
+  await db.sequelize.authenticate();
+  console.log('[DB] Подключение к базе данных успешно');
+}
+
+async function closeDB() {
+  await db.sequelize.close();
+  console.log('[DB] Соединение закрыто');
+}
+
+async function saveCategory(name, url) {
+  const [cat] = await Category.findOrCreate({ where: { name }, defaults: { name, url } });
+  return cat;
+}
+
+async function getAllCategories(limit = null) {
+  return Category.findAll(limit ? { limit } : {});
+}
+
+async function saveBrand(name) {
+  const [brand] = await Brand.findOrCreate({ where: { name }, defaults: { name } });
+  return brand;
+}
+
+async function saveProduct(data) {
+  const [prod] = await Product.findOrCreate({
+    where: { url: data.url },
+    defaults: data
+  });
+  return prod;
+}
+
+async function saveProductImage(productId, imageUrl) {
+  await ProductImage.findOrCreate({
+    where: { product_id: productId, image_url: imageUrl },
+    defaults: { product_id: productId, image_url: imageUrl }
+  });
+}
+
+async function saveProductSpec(productId, key, value) {
+  await ProductSpec.findOrCreate({
+    where: { product_id: productId, spec_key: key },
+    defaults: { product_id: productId, spec_key: key, spec_value: value }
+  });
+}
+
+module.exports = {
+  connectDB,
+  closeDB,
+  saveCategory,
+  getAllCategories,
+  saveBrand,
+  saveProduct,
+  saveProductImage,
+  saveProductSpec
+};

@@ -1,0 +1,154 @@
+// business/parserService.js
+'use strict';
+const puppeteer = require('puppeteer');
+const { DELAY, START_URL } = require('../config/settings');
+const dbService = require('../dataAccess/dbService');
+
+const now = () => new Date().toISOString();
+
+async function autoScroll(page) {
+  await page.evaluate(async () => {
+    await new Promise(resolve => {
+      let totalHeight = 0;
+      const distance = 300;
+      const delay = 300;
+      const timer = setInterval(() => {
+        window.scrollBy(0, distance);
+        totalHeight += distance;
+        if (totalHeight >= document.body.scrollHeight) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, delay);
+    });
+  });
+}
+
+async function parseAll() {
+  console.log(now(), 'Старт бизнес-логики парсера');
+
+  const browser = await puppeteer.launch({
+    headless: false,
+    executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    defaultViewport: null
+  });
+
+  const page = await browser.newPage();
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+  );
+
+  // === 1. Парсим категории ===
+  await page.goto(START_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+  await DELAY(1500);
+
+  const categoriesList = await page.evaluate(() => {
+    const arr = [];
+    document.querySelectorAll('a').forEach(a => {
+      const name = a.textContent.trim();
+      const url = a.href;
+      if (name && url.includes('/product-category/')) arr.push({ name, url });
+    });
+    const seen = new Set();
+    return arr.filter(c => {
+      if (seen.has(c.url)) return false;
+      seen.add(c.url);
+      return true;
+    });
+  });
+
+  console.log(now(), `Найдено категорий: ${categoriesList.length}`);
+  for (const cat of categoriesList) await dbService.saveCategory(cat.name, cat.url);
+
+  const categories = await dbService.getAllCategories();
+
+  // === 2. Обрабатываем каждую категорию ===
+  for (const cat of categories) {
+    const pageCat = await browser.newPage();
+    await pageCat.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+    );
+
+    console.log(now(), `[${cat.name}] Парсинг категории`);
+    let currentUrl = cat.url;
+
+    while (currentUrl) {
+      await pageCat.goto(currentUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      await autoScroll(pageCat);
+      await DELAY(1500);
+
+      const products = await pageCat.evaluate(() => {
+        const result = [];
+        document.querySelectorAll('.products .product').forEach(el => {
+          const title = el.querySelector('.woocommerce-loop-product__title')?.innerText.trim() || '';
+          const url = el.querySelector('a.woocommerce-LoopProduct-link')?.href || '';
+          const price = el.querySelector('.woocommerce-Price-amount')?.innerText.replace(/[^\d.]/g, '') || '0';
+          if (title && url) result.push({ title, url, price: parseFloat(price) });
+        });
+        return result;
+      });
+
+      console.log(now(), `[${cat.name}] Найдено товаров: ${products.length}`);
+
+      for (const p of products) {
+        const prodPage = await browser.newPage();
+        await prodPage.goto(p.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await DELAY(1000);
+
+        const data = await prodPage.evaluate(() => {
+          const getText = sel => document.querySelector(sel)?.innerText.trim() || '';
+          const description =
+            getText('.woocommerce-product-details__short-description') ||
+            getText('#tab-description') ||
+            getText('.entry-content');
+          const brand = getText('.posted_in a') || '';
+          const specs = [];
+          document.querySelectorAll('.woocommerce-product-attributes tr').forEach(row => {
+            const key = row.querySelector('th')?.innerText.trim();
+            const value = row.querySelector('td')?.innerText.trim();
+            if (key && value) specs.push({ key, value });
+          });
+          const images = Array.from(
+            document.querySelectorAll('.woocommerce-product-gallery__image img')
+          ).map(i => i.src);
+          return { description, brand, specs, images };
+        });
+
+        await prodPage.close();
+
+        let brandRec = null;
+        if (data.brand) brandRec = await dbService.saveBrand(data.brand);
+
+        const prod = await dbService.saveProduct({
+          title: p.title,
+          price: p.price,
+          url: p.url,
+          description: data.description,
+          category_id: cat.id,
+          brand_id: brandRec ? brandRec.id : null
+        });
+
+        for (const img of data.images)
+          await dbService.saveProductImage(prod.id, img);
+
+        for (const s of data.specs)
+          await dbService.saveProductSpec(prod.id, s.key, s.value);
+
+        console.log(now(), `[${cat.name}] Добавлен товар: ${p.title}`);
+      }
+
+      const next = await pageCat.evaluate(() => {
+        const el = document.querySelector('.woocommerce-pagination a.next');
+        return el ? el.href : null;
+      });
+      currentUrl = next || null;
+    }
+
+    console.log(now(), `[${cat.name}] Завершено`);
+    await pageCat.close();
+  }
+
+  await browser.close();
+}
+
+module.exports = { parseAll };

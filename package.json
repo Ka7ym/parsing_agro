@@ -1,0 +1,13 @@
+{
+  "devDependencies": {
+    "sequelize-cli": "^6.6.3"
+  },
+  "dependencies": {
+    "git": "^0.1.5",
+    "init": "^0.1.2",
+    "pg": "^8.16.3",
+    "pg-hstore": "^2.3.4",
+    "puppeteer": "^24.28.0",
+    "sequelize": "^6.37.7"
+  }
+}
